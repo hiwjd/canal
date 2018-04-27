@@ -8,6 +8,8 @@ import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.alibaba.otter.canal.parse.driver.mysql.packets.MysqlGTIDSet;
+import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.apache.commons.lang.math.RandomUtils;
@@ -87,6 +89,9 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
     protected TimerTask                              heartBeatTimerTask;
     protected Throwable                              exception                  = null;
 
+    protected boolean                                isGTIDMode                 = false; // 是否是GTID模式
+    protected String                                 GTIDSetStr                 = null;
+
     protected abstract BinlogParser buildParser();
 
     protected abstract ErosaConnection buildErosaConnection();
@@ -137,6 +142,7 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
         // 配置transaction buffer
         // 初始化缓冲队列
         transactionBuffer.setBufferSize(transactionSize);// 设置buffer大小
+        transactionBuffer.setGTIDMode(isGTIDMode());
         transactionBuffer.start();
         // 构造bin log parser
         binlogParser = buildParser();// 初始化一下BinLogParser
@@ -214,12 +220,17 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
                         };
 
                         // 4. 开始dump数据
-                        if (StringUtils.isEmpty(startPosition.getJournalName()) && startPosition.getTimestamp() != null) {
-                            erosaConnection.dump(startPosition.getTimestamp(), sinkHandler);
+                        // 判断所属instance是否启用GTID模式，是的话调用ErosaConnection中GTID对应方法dump数据
+                        if (isGTIDMode()) {
+                            erosaConnection.dump(MysqlGTIDSet.parse(startPosition.getGtid()), sinkHandler);
                         } else {
-                            erosaConnection.dump(startPosition.getJournalName(),
-                                startPosition.getPosition(),
-                                sinkHandler);
+                            if (StringUtils.isEmpty(startPosition.getJournalName()) && startPosition.getTimestamp() != null) {
+                                erosaConnection.dump(startPosition.getTimestamp(), sinkHandler);
+                            } else {
+                                erosaConnection.dump(startPosition.getJournalName(),
+                                        startPosition.getPosition(),
+                                        sinkHandler);
+                            }
                         }
 
                     } catch (TableIdNotFoundException e) {
@@ -368,6 +379,9 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
         position.setTimestamp(entry.getHeader().getExecuteTime());
         // add serverId at 2016-06-28
         position.setServerId(entry.getHeader().getServerId());
+        // set gtid
+        position.setGtid(entry.getHeader().getGtid());
+
         logPosition.setPostion(position);
 
         LogIdentity identity = new LogIdentity(runningInfo.getAddress(), -1L);
@@ -528,6 +542,22 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
 
     public Throwable getException() {
         return exception;
+    }
+
+    public boolean isGTIDMode() {
+        return isGTIDMode;
+    }
+
+    public void setIsGTIDMode(boolean isGTIDMode) {
+        this.isGTIDMode = isGTIDMode;
+    }
+
+    public String getGTIDSetStr() {
+        return GTIDSetStr;
+    }
+
+    public void setGTIDSetStr(String GTIDSetStr) {
+        this.GTIDSetStr = GTIDSetStr;
     }
 
 }
